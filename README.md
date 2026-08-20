@@ -184,15 +184,6 @@ Generated prediction outputs, model checkpoints, datasets, and other large exper
 
 The repository contains the research code and documentation required to understand and reproduce the experimental pipeline.
 
-## 👥 Team Members
-
-| Name           | Role                            |
-| -------------- | ------------------------------- |
-| Anjali Chauhan | Project Lead / Machine Learning |
-| Team Member 2  | To be added                     |
-| Team Member 3  | To be added                     |
-| Team Member 4  | To be added                     |
-
 ## 🔮 Future Work
 
 * Evaluate the system on additional mammography datasets.
