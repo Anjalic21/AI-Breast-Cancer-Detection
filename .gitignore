@@ -1,0 +1,33 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Environment / secrets
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Large datasets
+datasets/
+
+# Generated results
+results/
+
+# Model checkpoints
+*.pth
+*.pt
+*.h5
+*.keras
+
+# IDE
+.vscode/
+
+# Other Python/model files
+*.pkl
+*.joblib
