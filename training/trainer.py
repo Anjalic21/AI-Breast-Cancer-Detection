@@ -44,8 +44,9 @@ class Trainer:
         running_loss = 0.0
         correct_predictions = 0
         total_samples = 0
+        num_batches = len(self.train_loader)
         
-        for batch in self.train_loader:
+        for batch_idx, batch in enumerate(self.train_loader):
             if len(batch) == 3:
                 images, metadata, labels = batch
                 images = images.to(self.device)
@@ -73,6 +74,11 @@ class Trainer:
             correct_predictions += (preds == labels).sum().item()
             total_samples += labels.size(0)
             
+            # Print batch progress
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == num_batches:
+                print(f"    [Train] Batch {batch_idx+1:03d}/{num_batches:03d} | Batch Loss: {loss.item():.4f}", end="\r", flush=True)
+                
+        print()  # Clear line
         epoch_loss = running_loss / total_samples
         epoch_acc = correct_predictions / total_samples
         return epoch_loss, epoch_acc
@@ -83,9 +89,10 @@ class Trainer:
         running_loss = 0.0
         correct_predictions = 0
         total_samples = 0
+        num_batches = len(self.val_loader)
         
         with torch.no_grad():
-            for batch in self.val_loader:
+            for batch_idx, batch in enumerate(self.val_loader):
                 if len(batch) == 3:
                     images, metadata, labels = batch
                     images = images.to(self.device)
@@ -105,6 +112,11 @@ class Trainer:
                 correct_predictions += (preds == labels).sum().item()
                 total_samples += labels.size(0)
                 
+                # Print batch progress
+                if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == num_batches:
+                    print(f"    [Val] Batch {batch_idx+1:03d}/{num_batches:03d} | Batch Loss: {loss.item():.4f}", end="\r", flush=True)
+                    
+        print()  # Clear line
         val_loss = running_loss / total_samples
         val_acc = correct_predictions / total_samples
         return val_loss, val_acc
