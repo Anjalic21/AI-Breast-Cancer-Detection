@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils.config import Config
 from models.resnet_baseline import BreastCancerResNet50
+from models.multimodal_resnet import BreastCancerMultimodalResNet50
 from preprocessing.transforms import get_val_transforms, extract_roi, crop_breast_region
 from evaluation.gradcam import GradCAMExplainer
 
@@ -23,15 +24,26 @@ def main():
     parser = argparse.ArgumentParser(description="Individual Mammogram Inference System")
     parser.add_argument("--image", type=str, required=True, help="Path to input mammogram image")
     parser.add_argument("--mask", type=str, default=None, help="Path to optional binary ROI mask image")
-    parser.add_argument("--checkpoint", type=str, default="results/best_model_stage2.pth", 
+    parser.add_argument("--checkpoint", type=str, default="results/baseline/best_model_stage2.pth", 
                         help="Path to trained model weights checkpoint")
     parser.add_argument("--threshold", type=float, default=0.5, 
                         help="Classification threshold (default: 0.5)")
+    
+    # Multimodal parameters
+    parser.add_argument("--model", type=str, default="baseline", choices=["baseline", "multimodal"],
+                        help="Model type (baseline or multimodal)")
+    parser.add_argument("--density", type=int, choices=[1, 2, 3, 4], help="Breast density (1-4)")
+    parser.add_argument("--assessment", type=int, choices=[0, 1, 2, 3, 4, 5], help="BI-RADS assessment score (0-5)")
+    parser.add_argument("--subtlety", type=int, choices=[1, 2, 3, 4, 5], help="Subtlety score (1-5)")
+    parser.add_argument("--abnormality", type=str, choices=["mass", "calcification"], help="Abnormality type")
+    parser.add_argument("--laterality", type=str, choices=["LEFT", "RIGHT"], help="Laterality (LEFT or RIGHT)")
+    parser.add_argument("--view", type=str, choices=["CC", "MLO"], help="Image view (CC or MLO)")
+    
     args = parser.parse_args()
 
     # 2. Safety / Research Prototype Disclaimer
     print("=" * 65)
-    print("  BREAST CANCER DETECTION BASLINE SYSTEM — INDIVIDUAL INFERENCE")
+    print("  BREAST CANCER DETECTION SYSTEM — INDIVIDUAL INFERENCE")
     print("=" * 65)
     print("[Research Safety Notice]")
     print("This output is a research prototype prediction, NOT a medical diagnosis.")
@@ -60,7 +72,7 @@ def main():
             print(f"ERROR: Failed to load/open mask (check path and file integrity):\n{mask_path}")
             sys.exit(1)
 
-    # 4. Load configuration & model architecture
+    # 4. Load configuration & checkpoint
     config = Config()
     
     # Overwrite device setting based on availability (MPS -> CUDA -> CPU)
@@ -71,9 +83,6 @@ def main():
     else:
         config.DEVICE = "cpu"
         
-    model = BreastCancerResNet50(config)
-
-    # Load weights
     checkpoint_path = args.checkpoint
     if not os.path.isabs(checkpoint_path):
         checkpoint_path = os.path.join(config.BASE_DIR, checkpoint_path)
@@ -84,9 +93,84 @@ def main():
 
     print(f"[System] Loading checkpoint from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=config.DEVICE)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    state_dict = checkpoint['model_state_dict']
+    
+    metadata_dim = 0
+    meta_slice = []
+    meta_tensor = None
+    
+    if args.model == "multimodal":
+        # Inspect state dict to determine metadata dimension
+        classifier_weight_key = 'classifier.0.weight'
+        if classifier_weight_key in state_dict:
+            fused_dim = state_dict[classifier_weight_key].shape[1]
+            metadata_dim = fused_dim - 2048
+            print(f"[Model] Detected metadata dimension from checkpoint: {metadata_dim}")
+        else:
+            metadata_dim = 6
+            print(f"[Model] Warning: {classifier_weight_key} not found in state dict. Defaulting metadata dimension to 6.")
+            
+        # Add clear validation errors if required multimodal metadata is missing
+        if metadata_dim >= 1 and args.density is None:
+            print("ERROR: --density is required for this multimodal model configuration.")
+            sys.exit(1)
+        if metadata_dim >= 2 and args.assessment is None:
+            print("ERROR: --assessment is required for this multimodal model configuration.")
+            sys.exit(1)
+        if metadata_dim >= 3 and args.subtlety is None:
+            print("ERROR: --subtlety is required for this multimodal model configuration.")
+            sys.exit(1)
+        if metadata_dim >= 6:
+            if args.abnormality is None:
+                print("ERROR: --abnormality is required for this multimodal model configuration.")
+                sys.exit(1)
+            if args.laterality is None:
+                print("ERROR: --laterality is required for this multimodal model configuration.")
+                sys.exit(1)
+            if args.view is None:
+                print("ERROR: --view is required for this multimodal model configuration.")
+                sys.exit(1)
+                
+        # Encode the metadata using EXACTLY the same encoding/order used during training
+        d_val = args.density / 4.0 if args.density is not None else 0.0
+        a_val = args.assessment / 5.0 if args.assessment is not None else 0.0
+        s_val = args.subtlety / 5.0 if args.subtlety is not None else 0.0
+        v_val = 1.0 if args.view is not None and args.view.upper() == 'MLO' else 0.0
+        l_val = 1.0 if args.laterality is not None and args.laterality.upper() == 'RIGHT' else 0.0
+        ab_val = 1.0 if args.abnormality is not None and args.abnormality.lower() == 'mass' else 0.0
+        
+        meta_all = [d_val, a_val, s_val, v_val, l_val, ab_val]
+        meta_slice = meta_all[:metadata_dim]
+        meta_tensor = torch.tensor([meta_slice], dtype=torch.float32).to(config.DEVICE)
+        
+        # Configure model ablation mode mapping
+        if metadata_dim == 1:
+            config.ABLATION_MODE = 2
+        elif metadata_dim == 2:
+            config.ABLATION_MODE = 3
+        elif metadata_dim == 3:
+            config.ABLATION_MODE = 4
+        elif metadata_dim == 6:
+            config.ABLATION_MODE = 5
+        else:
+            config.ABLATION_MODE = 5
+            
+        model = BreastCancerMultimodalResNet50(config)
+    else:
+        model = BreastCancerResNet50(config)
+
+    model.load_state_dict(state_dict)
     model.to(config.DEVICE)
     model.eval()
+
+    # If multimodal, monkey patch model's forward to inject meta_tensor when metadata is None (for Grad-CAM)
+    if args.model == "multimodal":
+        original_forward = model.forward
+        def patched_forward(x, metadata=None):
+            if metadata is None:
+                return original_forward(x, metadata=meta_tensor)
+            return original_forward(x, metadata=metadata)
+        model.forward = patched_forward
 
     # 5. Apply inference preprocessing (must match validation flow)
     # Crop breast or extract ROI using mask
@@ -106,10 +190,16 @@ def main():
     img_tensor = transformed["image"].unsqueeze(0)  # Add batch dimension -> (1, 3, H, W)
 
     # 6. Run Model Inference
-    print("[Inference] Running forward pass through ResNet50 model...")
-    with torch.no_grad():
-        logit = model(img_tensor.to(config.DEVICE))
-        prob_malignant = torch.sigmoid(logit).item()
+    if args.model == "multimodal":
+        print(f"[Inference] Running forward pass through Multimodal model with metadata vector: {meta_slice}")
+        with torch.no_grad():
+            logit = model(img_tensor.to(config.DEVICE), metadata=meta_tensor)
+            prob_malignant = torch.sigmoid(logit).item()
+    else:
+        print("[Inference] Running forward pass through ResNet50 model...")
+        with torch.no_grad():
+            logit = model(img_tensor.to(config.DEVICE))
+            prob_malignant = torch.sigmoid(logit).item()
         
     prob_benign = 1.0 - prob_malignant
     
@@ -188,15 +278,38 @@ def main():
         "benign_probability": round(prob_benign, 4),
         "confidence": round(confidence, 4),
         "threshold": args.threshold,
-        "model": config.MODEL_NAME,
+        "model": args.model,
         "checkpoint": os.path.basename(checkpoint_path)
     }
+    if args.model == "multimodal":
+        report_data["metadata_input"] = {
+            "density": args.density,
+            "assessment": args.assessment,
+            "subtlety": args.subtlety,
+            "abnormality": args.abnormality,
+            "laterality": args.laterality,
+            "view": args.view
+        }
+        report_data["metadata_vector"] = meta_slice
 
     with open(json_path, 'w') as f:
         json.dump(report_data, f, indent=4)
 
-    print(f"Grad-CAM saved to:\n{png_path}")
-    print(f"JSON report saved to:\n{json_path}")
+    # 9. Print End-of-Run Summary Report
+    print("=" * 65)
+    print("  FINAL INFERENCE REPORT")
+    print("=" * 65)
+    print(f"Checkpoint Loaded Successfully : Yes")
+    print(f"Model Type Used                : {args.model}")
+    if args.model == "multimodal":
+        print(f"Metadata Vector Passed         : {meta_slice}")
+    else:
+        print(f"Metadata Vector Passed         : N/A (Baseline Image-only)")
+    print(f"Malignant Probability          : {prob_malignant * 100:.2f}%")
+    print(f"Predicted Class                : {pred_label}")
+    print(f"Classification Threshold       : {args.threshold}")
+    print(f"Grad-CAM Output Path           : {png_path}")
+    print(f"JSON Output Path               : {json_path}")
     print("=" * 65)
 
 
